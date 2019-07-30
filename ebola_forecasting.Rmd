@@ -1,0 +1,93 @@
+---
+title: "Ebola forecasting"
+output: html_document
+---
+
+```{r load_data}
+library(tidyverse)
+ebola <- read.csv("DRC_ebola_cases.csv", header = TRUE, stringsAsFactors = FALSE)
+ebola.confirmed <- ebola[-1,c(2,15)] %>% 
+                    mutate(report_date = as.Date(report_date, format = "%m/%d/%Y"), 
+                           confirmed_cases = as.numeric(confirmed_cases_change) + 1) %>%                                      select(-confirmed_cases_change)
+
+
+```
+
+```{r plot_ts}
+library(ggplot2)
+ggplot(ebola.confirmed, aes(x = report_date, y = confirmed_cases)) + geom_line()
+```
+
+```{r random_walk}
+library(rjags)
+RandomWalk = "
+model{
+  
+  #### Data Model
+  for(t in 1:n){
+    y[t] ~ dnorm(x[t],tau_obs)
+  }
+  
+  #### Process Model
+  for(t in 2:n){
+    x[t]~dnorm(x[t-1],tau_add)
+  }
+  
+  #### Priors
+  x[1] ~ dnorm(x_ic,tau_ic)
+  tau_obs ~ dgamma(a_obs,r_obs)
+  tau_add ~ dgamma(a_add,r_add)
+}
+"
+
+data <- list(y=log(ebola.confirmed$confirmed_cases),n=length(ebola.confirmed$confirmed_cases),x_ic=log(1000),tau_ic=100,a_obs=1,r_obs=1,a_add=1,r_add=1)
+
+nchain = 3
+init <- list()
+for(i in 1:nchain){
+  y.samp = sample(ebola.confirmed$confirmed_cases,length(ebola.confirmed$confirmed_cases),replace=TRUE)
+  init[[i]] <- list(tau_add=1/var(diff(log(y.samp))),tau_obs=5/var(log(y.samp)))
+}
+
+j.model   <- jags.model (file = textConnection(RandomWalk),
+                             data = data,
+                             inits = init,
+                             n.chains = 3)
+
+jags.out   <- coda.samples (model = j.model,
+                            variable.names = c("tau_add","tau_obs","x"),
+                                n.iter = 20000)
+
+plot(jags.out)
+GBR <- gelman.plot(jags.out)
+
+```
+
+
+```{r}
+
+burnin = 6000                                ## determine convergence
+jags.burn <- window(jags.out,start=burnin)  ## remove burn-in
+plot(jags.burn)                             ## check diagnostics post burn-in
+
+```
+
+```{r}
+library("ecoforecastR")
+time.rng = c(1:length(ebola.confirmed$report_date)) ## adjust to zoom in and out
+out <- as.matrix(jags.burn)
+x.cols <- grep("^x",colnames(out)) ## grab all columns that start with the letter x
+ci <- apply(exp(out[,x.cols]),2,quantile,c(0.025,0.5,0.975)) ## model was fit on log scale
+
+plot(ebola.confirmed$report_date,ci[2,],type='n',ylim=range(ebola.confirmed$confirmed_cases,na.rm=TRUE),ylab="Ebola",log='y',xlim=ebola.confirmed$report_date[time.rng])
+## adjust x-axis label to be monthly if zoomed
+# if(diff(time.rng) < 100){ 
+#   axis.Date(1, at=seq(time[time.rng[1]],time[time.rng[2]],by='month'), format = "%Y-%m")
+# }
+ecoforecastR::ciEnvelope(ebola.confirmed$report_date,ci[1,],ci[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
+points(ebola.confirmed$report_date,ebola.confirmed$confirmed_cases,pch="+",cex=0.5)
+# y = gflu$Massachusetts
+# points(time[(n-39):n],y[(n-39):n],pch="+",cex=0.5, col = "red")
+
+```
+
