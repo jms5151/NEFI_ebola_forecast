@@ -1,0 +1,154 @@
+---
+title: "Ebola_RandomWalk"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(janitor)
+library(rjags)
+library(lubridate)
+library(cowplot)
+```
+```{r}
+colnames <- names(read_csv("DRC_ebola_cases.csv"))
+eb <- read_csv("DRC_ebola_cases.csv", col_names = colnames, skip = 2) %>%
+  mutate(report_date = mdy(report_date))
+```
+```{r}
+eb %>% 
+  ggplot(aes(x = report_date, y = confirmed_cases_change)) +
+  geom_point() +
+  geom_line()
+```
+
+
+```{r}
+eb_RW <- "
+model{
+
+#Data Model
+for(t in 1:n){
+    y[t] ~ dnorm(x[t], tau_obs)
+}
+
+#Process Model
+for(t in 2:n){
+  x[t] ~ dnorm(x[t-1], tau_add)
+}
+
+#Priors
+x[1] ~ dnorm(x_ic, tau_ic)
+tau_obs ~ dgamma(a_obs, r_obs)
+tau_add ~ dgamma(a_add, r_add)
+}
+"
+```
+
+```{r}
+y <- eb$confirmed_cases_change + 1
+
+data <- list(y=log(y),
+             n=length(y),
+             x_ic=log(1000),
+             tau_ic=100,
+             a_obs=1,
+             r_obs=1,
+             a_add=1,
+             r_add=1)
+```
+```{r}
+nchain = 3
+init <- list()
+for(i in 1:nchain){
+  y.samp = sample(y,length(y),replace=TRUE)
+  init[[i]] <- list(tau_add = 1/var(diff(log(y.samp))),
+                    tau_obs = 5/var(log(y.samp)))
+}
+```
+
+```{r}
+j.model   <- jags.model (file = textConnection(eb_RW),
+                             data = data,
+                             inits = init,
+                             n.chains = 3)
+```
+
+
+```{r, fig.asp = 1.0}
+## burn-in
+jags.out   <- coda.samples (model = j.model,
+                            variable.names = c("tau_add","tau_obs"),
+                                n.iter = 20000)
+plot(jags.out)
+```
+
+
+```{r}
+jags.out   <- coda.samples (model = j.model,
+                            variable.names = c("x","tau_add","tau_obs"),
+                                n.iter = 10000)
+```
+
+```{r}
+#gelman.plot(jags.out)
+burnin = 6000
+jags.burn <- window(jags.out, start = burnin)
+```
+
+```{r}
+tdate <- eb %>% 
+  distinct(report_date) %>% 
+  mutate(nrow = row_number()) %>% 
+  mutate(nrow = as.character(nrow))
+
+out <- as.matrix(jags.burn) %>% 
+  as_tibble() %>% 
+  clean_names() %>% 
+  dplyr::select(-c(tau_add, tau_obs)) %>% 
+  gather(x_1:x_352, key = "nrow", value = "pred") %>% 
+  separate(nrow, c("delete", "nrow")) %>% 
+  sample_n(1000) %>%
+  left_join(tdate) %>% 
+  group_by(report_date, nrow) %>% 
+  summarise(cases_pred = median(pred),
+            lwr_quantile = quantile(pred, 0.025),
+            upr_quantile = quantile(pred, 0.975))
+  
+
+eb %>% 
+  ggplot() +
+  geom_point(aes(x = report_date, y = confirmed_cases_change)) +
+  #geom_line(aes(x = report_date, y = confirmed_cases_change)) +
+  geom_line(data = out, aes(x = report_date, y = exp(cases_pred)-1), color = "red") +
+  geom_ribbon(data = out, aes(x = report_date, ymin = exp(lwr_quantile)-1, ymax = exp(upr_quantile)-1), fill = "red", alpha = 0.6) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylim(0, 27)
+```
+
+```{r}
+data$Tmin=min(tdate$report_date)
+ef.out <- ecoforecastR::fit_dlm(model=list(obs="y",fixed="~ 1 + X + Tmin"),data)
+names(ef.out)
+```{r, fig.asp = 1.0}
+## parameter diagnostics
+params <- window(ef.out$params,start=1000) ## remove burn-in
+plot(params)
+summary(params)
+cor(as.matrix(params))
+pairs(as.matrix(params))
+
+## confidence interval
+out <- as.matrix(ef.out$predict)
+ci <- apply(exp(out)-1,2,quantile,c(0.025,0.5,0.975))
+{plot(tdate$report_date,ci[2,])
+## adjust x-axis label to be monthly if zoomed
+#if(diff(time.rng) < 100){ 
+#  axis.Date(1, at=seq(time[time.rng[1]],time[time.rng[2]],by='month'), #format = "%Y-%m")
+#}
+ecoforecastR::ciEnvelope(tdate$report_date,ci[1,],ci[3,],col=ecoforecastR::col.alpha("lightBlue",0.75))
+points(tdate$report_date,y,pch="+",cex=0.5)}
+``````
+
