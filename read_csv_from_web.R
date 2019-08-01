@@ -21,3 +21,24 @@ for (i in 1:length(csvNames)){
 # remove temporary file
  x <- NULL
 
+# aggregate to health zone and weekly cases ----------------------------------
+library(lubridate)
+library(dplyr)
+
+# remove negative case values
+ebola_zone$confirmed_cases_change[ebola_zone$confirmed_cases_change<0] <- NA 
+
+# aggregate by health zone and week
+ebola <- ebola_zone %>% 
+  group_by(health_zone, week = cut(report_date + 1, "week")) %>% 
+  summarise(confirmed_cases = sum(confirmed_cases_change, na.rm = T))
+
+# keep provinces with > 100 cases   
+provincesToKeep <- ebola_zone %>% 
+  group_by(health_zone) %>%
+  summarise(confirmed_cases = sum(confirmed_cases_change, na.rm = T))
+
+provincesToKeep <- subset(provincesToKeep, confirmed_cases > 100)   
+
+ebola <- ebola[ebola$health_zone %in% unique(provincesToKeep$health_zone),]
+
