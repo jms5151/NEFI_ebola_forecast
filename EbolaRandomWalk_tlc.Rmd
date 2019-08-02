@@ -6,6 +6,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
 
+library(mvtnorm)
 library(tidyverse)
 library(janitor)
 library(rjags)
@@ -72,16 +73,16 @@ for(i in 1:nchain){
 
 ```{r}
 j.model   <- jags.model (file = textConnection(eb_RW),
-                             data = data,
-                             inits = init,
-                             n.chains = 3)
+                         data = data,
+                         inits = init,
+                         n.chains = 3)
 ```
 
 
 ```{r, fig.asp = 1.0}
 jags.out   <- coda.samples (model = j.model,
                             variable.names = c("tau_add","tau_obs", "x"),
-                                n.iter = 10000)
+                            n.iter = 10000)
 #plot(jags.out)
 ```
 
@@ -109,7 +110,7 @@ out <- as.matrix(jags.burn) %>%
   dplyr::select(-delete) %>% 
   sample_n(5000) %>%
   left_join(tdate) #%>% 
-  
+
 
 
 outpred <- out %>%
@@ -122,8 +123,8 @@ outvar <- as.matrix(jags.burn) %>%
   as_tibble() %>% 
   clean_names() %>% 
   dplyr::select(c(tau_add, tau_obs)) 
-  
-  
+
+
 out_pi <- exp(rnorm(nrow(tdate), out$cases_pred, 1/sqrt(outvar$tau_obs)))
 
 p <- eb %>% 
@@ -145,7 +146,7 @@ p <- eb %>%
 ```{r}
 colnames <- names(read_csv("/Users/tinacheng/Dropbox/NEFI/EbolaProject/data/Data_ DRC Ebola Outbreak, North Kivu and Ituri - MOH-By-Health-Zone.csv"))
 ebz <- read_csv("/Users/tinacheng/Dropbox/NEFI/EbolaProject/data/Data_ DRC Ebola Outbreak, North Kivu and Ituri - MOH-By-Health-Zone.csv", 
-               col_names = colnames, skip = 2) %>% 
+                col_names = colnames, skip = 2) %>% 
   mutate(report_date = ymd(report_date))
 
 ebz0 <- ebz %>%
@@ -161,12 +162,10 @@ ebzW <- ebz0 %>%
   group_by(date_week, health_zone, province) %>% 
   summarise(confirmed_cases_weekly = sum(confirmed_cases_change, na.rm = TRUE)) %>%
   filter(health_zone %in% c("Beni", "Kalunguta", "Katwa", "Butembo", "Mabalako", "Mandima")) %>% 
-  left_join(zd) #%>% 
-  #replace_na(list(confirmed_cases_weekly = 0)) #%>% 
-  #mutate(confirmed_cases_weekly2 = ifelse(date_week > 39, NA, confirmed_cases_weekly))
+  left_join(zd) 
 
 w30 <- data.frame(date_week = 30)
-  
+
 ebzWeekly <- ebzW %>% 
   ungroup() %>% 
   dplyr::select(-c(province, health_zone)) %>% 
@@ -233,11 +232,13 @@ adj = matrix(c(0,1,1,1,1,0,    ### state-to-state spatial adjacency (self=0)
 ```
 
 ```{r}
+#great circle distance: geographic distance (km) between pop-weighted centroids for health zones
 adj <- dist.mat
+
 ```
 
 
-```{r, accounting for missing data}
+```{r}
 SpatialRandomWalk = "
 model{
 
@@ -276,6 +277,46 @@ model{
 "
 ```
 
+
+```{r}
+SpatialRandomWalkPois = "
+model{
+
+  #### Data Model
+  for(t in 1:n){
+    for(i in 1:nzones){
+      y[i,t] ~ dpois(x[i,t])
+    }
+  }
+
+  #### Process Model
+  for(t in 2:n){
+    for(i in 1:nzones){
+      mu[i,t] <- x[i,t-1] + alpha * sum(adj[i,1:nzones]*x[1:nzones,t-1])
+    }
+    log(x[1:nzones,t]) ~ dmnorm(log(mu[1:nzones,t]),Omega_proc[1:6,1:6])
+  }
+  
+  #### Priors
+  for(i in 1:nzones){
+    log(x[i,1]) ~ dnorm(x_ic,tau_ic)
+  }
+  #x[indices.na] ~ dunif(0,1000)
+
+  # for(i in 1:nzones)
+  # {
+  #   for(j in 1:nzones)
+  #   {
+  #     Omega_proc[i,j] ~ dgamma(a_proc, b_proc) 
+  #   }
+  # }
+  
+  Omega_proc ~ dwish(R,K)
+  alpha ~ dbeta(1,20)
+}
+"
+```
+
 ```{r}
 data <- list(y = y,
              nzones = nzones,
@@ -306,20 +347,20 @@ data <- list(y = y,
 j.model <- jags.model(file = textConnection(SpatialRandomWalk),
                       data = data)
 jags.out1 <- coda.samples(j.model,
-                         variable.names = c("alpha", "tau_obs", "x", 'Omega_proc'),
-                         n.iter = 10000)
+                          variable.names = c("alpha", "tau_obs", "x", 'Omega_proc'),
+                          n.iter = 10000)
 
 j.model <- jags.model(file = textConnection(SpatialRandomWalk),
                       data = data)
 jags.out2 <- coda.samples(j.model,
-                         variable.names = c("alpha", "tau_obs", "x"),
-                         n.iter = 10000)
+                          variable.names = c("alpha", "tau_obs", "x"),
+                          n.iter = 10000)
 
 j.model <- jags.model(file = textConnection(SpatialRandomWalk),
                       data = data)
 jags.out3 <- coda.samples(j.model,
-                         variable.names = c("alpha", "tau_obs"),
-                         n.iter = 10000)
+                          variable.names = c("alpha", "tau_obs"),
+                          n.iter = 10000)
 
 mhlist <- mcmc.list(list(jags.out1[[1]], jags.out2[[1]], jags.out3[[1]]))
 
@@ -341,7 +382,7 @@ out_tibble <- as_tibble(out)
 
 out_tibble2 <- out_tibble %>% 
   clean_names() %>% 
-  dplyr::select(-c(alpha, tau_obs)) %>% 
+  dplyr::select(x_1_1:x_6_39) %>% 
   gather(time, value) %>% 
   separate(time, c("delete","zones_num", "time")) %>% 
   sample_n(1000) 
@@ -370,6 +411,41 @@ p_sprw <- out_summary %>%
 ```
 
 #Forecast
+
+```{r}
+
+```
+
+
+```{r}
+Omega_proc_mean <- matrix(0, nrow = 6, ncol = 6)
+for(ii in 1:nrow(out))
+{
+  omegas = out[ii,1:36]
+  omega_mat <- matrix(omegas, nrow = 6, ncol = 6, byrow = F)
+  Omega_proc_mean <- Omega_proc_mean + solve(omega_mat)
+}
+
+Omega_proc_mean <- Omega_proc_mean / nrow(out)
+
+
+x_out <- out %>%
+  as_tibble() %>% 
+  dplyr::select(`x[1,1]`:`x[6,39]`) %>% 
+  clean_names() %>% 
+  gather(key = param, value = value) %>% 
+  separate(param, c("name", "zone", "time")) %>% 
+  #mutate(param = paste(name1, name2, sep = "_")) %>% 
+  dplyr::select(-c(name)) %>% 
+  sample_n(1000) %>% 
+  group_by(zone, time) %>% 
+  summarise(mean_value = mean(value)) %>% 
+  mutate(time = as.numeric(time)) %>% 
+  arrange(time) %>% 
+  spread(key = time, value = mean_value) 
+
+```
+
 ```{r}
 ##` @param IC    Initial Conditions
 ##` @param r     Intrinsic growth rate
@@ -379,31 +455,115 @@ p_sprw <- out_summary %>%
 ##` @param ppt   Precipitation forecast
 ##` @param Q     Process error (default = 0 for deterministic runs)
 ##` @param n     Size of Monte Carlo ensemble
-forecastN <- function(IC,alpha, tau_obs, Omega_proc, adj, nzones = nzones, NT = length(time), n=Nmc){
+forecastN <- function(IC,alpha, tau_obs, Omega_proc, adj, nzones = 6, NT = 13, n=nrow(out)){
   N <- array(NA,c(nzones, NT, n))  ## storage
   mu <- matrix(NA, nrow = nzones, ncol = NT)
   Nprev <- IC           ## initialize
   for(t in 1:NT){
     for(i in 1:nzones)
     {
-      mu[i,t] <- Nprev + alpha * sum(adj[i,1:nzones]*Nprev)
+      mu[i,t] <- Nprev[i] + alpha * sum(adj[i,1:nzones]*Nprev)
     }
     
-    for(i in 1:nzones)
-    {
-      N[i,t,] <- rmvnorm(n, mu[1:nzones,t],Omega_proc[1:6,1:6])
-    }
-    Nprev <- rowMeans(N[,t,])                                  ## update IC
+    N[,t,] <- t(rmvnorm(n, mu[1:nzones,t],Omega_proc[1:6,1:6]))                                  
+    Nprev <- rowMeans(N[,t,]) ## update IC
   }
   return(N)
 }
-head(out)
+
 IC = colMeans(out[,paste('x[', 1:6, ',39]', sep = '')])
 alpha = mean(out[,'alpha'])
 tau_obs = mean(out[,'tau_obs'])
-#omega
+Omega_proc = Omega_proc_mean
 
 
-test = forecastN(IC = out[grep])
+
+test = forecastN(IC = IC, alpha = alpha, tau_obs = tau_obs, Omega_proc = Omega_proc_mean, adj = dist.mat, nzones = 6, NT = 13, n=50)
+```
+
+zone, time, samples
+```{r}
+for(i in 1:2){
+  beta[i] ~ dnorm(0, 0.001)
+}
+
+sigma1 ~ dgamma(1,1)
+
+for(i in 1:n1){
+  mu1[i] <- beta[1] + beta[2] * X1[i]
+  Y1[i] ~ dnorm(mu1[i], sigma1)
+}
+
+sigma2 ~dgamma(1,1)
+for(i in 1:n2){
+  mu2[i] <- beta[1] + beta[2] * X1[i]
+  Y2[i] ~ dnorm(mu2[i], sigma1)
+}
+
+```
+
+```{r}
+runNo <- rep(seq(40,52,1), 300)
+
+Nt <- test %>% 
+  as_tibble() %>%
+  mutate(zones_num = row_number()) %>% 
+  gather("vector", "value", -zones_num) %>% 
+  arrange(zones_num) %>% 
+  mutate(time = runNo) %>% 
+  group_by(zones_num, time) %>% 
+  summarise(conf_cases = median(value),
+            low95 = quantile(value, 0.025),
+            high95 = quantile(value, 0.975)) %>% 
+  mutate(predicted = "yes")
+Ntout <- out_summary %>% 
+  mutate(predicted = "no") %>% 
+  full_join(Nt)
+
+ebP <- ebzW %>%
+  mutate(samp = ifelse(date_week <= 39, "in", "out"))
+
+pout <- Ntout %>% 
+  left_join(zd) %>% 
+  ggplot() +
+  geom_point(data = ebP, aes(x = date_week, y = confirmed_cases_weekly, shape = samp)) +
+  scale_shape_manual(values = c(1, 4)) +
+  geom_line(aes(x = time, y = conf_cases, color = as.factor(health_zone), linetype = predicted)) +
+  geom_ribbon(aes(x = time, ymin = low95, ymax = high95, fill = as.factor(health_zone)), alpha = 0.5) +
+  facet_wrap(~health_zone, scales = "free") +
+  theme(legend.position = "none") +
+  xlab("Week") +
+  ylab("Ebola Cases (weekly)")
+  
+```
+
+```{r}
+N1 <- N[,,1] %>% 
+  as_tibble() %>% 
+  rownames_to_column("zone_num")
+
+N2 <- N[,,2] %>% 
+  as_tibble() %>% 
+  mutate(zone_num = 2)
+
+N3 <- N[,,3] %>% 
+  as_tibble() %>% 
+  mutate(zone_num = 3)
+
+N4 <- N[,,4] %>% 
+  as_tibble() %>% 
+  mutate(zone_num = 4)
+
+N5 <- N[,,5] %>% 
+  as_tibble() %>% 
+  mutate(zone_num = 5)
+
+N6 <- N[,,6] %>% 
+  as_tibble() %>% 
+  mutate(zone_num = 6)
+
+Ntog <- rbind(N1, N2, N3, N4, N5, N6) #%>% 
+  gather(V1:V13, key = "weekV", value = "value")
+
 ```
 
